@@ -1,25 +1,48 @@
-
 const crypto = require("crypto");
 const Razorpay = require("razorpay");
+const mongoose = require("mongoose");
 
 const Payment = require("../models/payment.model");
+const User = require("../models/user.model");
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// Trusted server-side price catalog.
-// Replace example prices/product entries with your actual catalog.
 const PLANS = {
   pro_monthly: {
-    name: "DevKit Pro Monthly",
+    name: "DevKit Premium Monthly",
     amount: 29900,
     billingCycle: "monthly",
     razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
   },
   pro_yearly: {
-    name: "DevKit Pro Yearly",
+    name: "DevKit Premium Yearly",
+    amount: 299900,
+    billingCycle: "yearly",
+    razorpayPlanId: process.env.RAZORPAY_PRO_YEARLY_PLAN_ID,
+  },
+  pro: {
+    name: "DevKit Premium Monthly",
+    amount: 29900,
+    billingCycle: "monthly",
+    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+  },
+  premium: {
+    name: "DevKit Premium Monthly",
+    amount: 29900,
+    billingCycle: "monthly",
+    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+  },
+  premium_monthly: {
+    name: "DevKit Premium Monthly",
+    amount: 29900,
+    billingCycle: "monthly",
+    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+  },
+  premium_yearly: {
+    name: "DevKit Premium Yearly",
     amount: 299900,
     billingCycle: "yearly",
     razorpayPlanId: process.env.RAZORPAY_PRO_YEARLY_PLAN_ID,
@@ -27,30 +50,23 @@ const PLANS = {
 };
 
 const SOURCE_CODES = {
-  // Example entry. Replace with your actual project catalog.
   project_alpha: {
     name: "Project Alpha Source Code",
     amount: 49900,
   },
 };
 
-const CONTRIBUTION_MIN = 2000;   // ₹20
-const CONTRIBUTION_MAX = 1000000; // ₹10,000
+const CONTRIBUTION_MIN = 2000;
+const CONTRIBUTION_MAX = 1000000;
 
 function assertConfig() {
-  if (
-    !process.env.RAZORPAY_KEY_ID ||
-    !process.env.RAZORPAY_KEY_SECRET
-  ) {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
     throw new Error("Razorpay credentials are not configured");
   }
 }
 
 function verifyHmac(message, signature) {
-  if (
-    typeof signature !== "string" ||
-    !/^[a-f0-9]{64}$/i.test(signature)
-  ) {
+  if (typeof signature !== "string" || !/^[a-f0-9]{64}$/i.test(signature)) {
     return false;
   }
 
@@ -77,7 +93,29 @@ function addHistory(payment, status, source, reason) {
   });
 }
 
-// Create a local record before contacting Razorpay.
+function validateIdempotencyKey(idempotencyKey) {
+  if (
+    typeof idempotencyKey !== "string" ||
+    idempotencyKey.length < 16 ||
+    idempotencyKey.length > 128
+  ) {
+    throw new Error("A valid idempotencyKey is required");
+  }
+}
+
+function serializePayment(payment) {
+  return {
+    paymentId: payment._id,
+    type: payment.type,
+    amount: payment.amount,
+    currency: payment.currency,
+    status: payment.status,
+    orderId: payment.gateway?.razorpayOrderId || null,
+    subscriptionId: payment.gateway?.razorpaySubscriptionId || null,
+    keyId: process.env.RAZORPAY_KEY_ID,
+  };
+}
+
 async function createPayment({
   userId,
   type,
@@ -86,27 +124,59 @@ async function createPayment({
   idempotencyKey,
 }) {
   assertConfig();
+  validateIdempotencyKey(idempotencyKey);
 
-  if (!userId || !mongooseIdIsValid(userId)) {
-    throw new Error("Valid userId is required");
+  const isContribution = type === "contribution";
+  let normalizedUserId = null;
+
+  if (userId) {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      throw new Error("Invalid userId");
+    }
+
+    normalizedUserId = new mongoose.Types.ObjectId(userId);
   }
 
-  if (
-    typeof idempotencyKey !== "string" ||
-    idempotencyKey.length < 16 ||
-    idempotencyKey.length > 128
-  ) {
-    throw new Error("A valid idempotencyKey is required");
+  if (!isContribution && !normalizedUserId) {
+    throw new Error("Login is required for this payment");
   }
 
-  // A retry with the same key must not create a new payment record.
-  const existing = await Payment.findOne({
-    user: userId,
+  if (!["subscription", "contribution", "source_code"].includes(type)) {
+    throw new Error("Unsupported payment type");
+  }
+
+  const existingQuery = {
     idempotencyKey,
-  });
+    ...(normalizedUserId
+      ? { user: normalizedUserId }
+      : { user: { $exists: false } }),
+  };
+
+  const existing = await Payment.findOne(existingQuery);
 
   if (existing) {
-    return existing;
+    if (existing.type !== type) {
+      throw new Error("Idempotency key was already used for another payment");
+    }
+
+    if (existing.status === "created" || existing.status === "pending") {
+      if (
+        existing.gateway?.razorpayOrderId ||
+        existing.gateway?.razorpaySubscriptionId
+      ) {
+        return serializePayment(existing);
+      }
+
+      throw new Error(
+        "Payment creation is being reconciled. Please retry shortly.",
+      );
+    }
+
+    if (existing.status === "captured") {
+      throw new Error("This payment has already been completed");
+    }
+
+    throw new Error("This idempotency key cannot be reused");
   }
 
   let amount;
@@ -117,16 +187,17 @@ async function createPayment({
   let resourceId = null;
 
   if (type === "subscription") {
-    const plan = PLANS[itemCode];
+    const selectedCode = (itemCode && PLANS[itemCode]) ? itemCode : "pro_monthly";
+    const plan = PLANS[selectedCode];
 
-    if (!plan || !plan.razorpayPlanId) {
-      throw new Error("Invalid or unconfigured subscription plan");
+    if (!plan) {
+      throw new Error("Invalid subscription plan");
     }
 
     ({ name, amount, billingCycle } = plan);
-    planCode = itemCode;
-    razorpayPlanId = plan.razorpayPlanId;
-  } else if (type === "contribution") {
+    planCode = selectedCode;
+    razorpayPlanId = plan.razorpayPlanId || null;
+  } else if (isContribution) {
     if (
       !Number.isSafeInteger(contributionAmount) ||
       contributionAmount < CONTRIBUTION_MIN ||
@@ -145,17 +216,14 @@ async function createPayment({
     }
 
     ({ name, amount } = product);
-    resourceId = null; // Resolve the real resource ID from your DB.
-  } else {
-    throw new Error("Unsupported payment type");
   }
 
-  const payment = await Payment.create({
-    user: userId,
+  const payment = new Payment({
+    ...(normalizedUserId ? { user: normalizedUserId } : {}),
     type,
     purpose: {
       name,
-      itemCode,
+      itemCode: itemCode || null,
       resourceId,
       metadata: {},
     },
@@ -172,90 +240,92 @@ async function createPayment({
         status: "created",
         source: "system",
         reason: "Checkout initiated",
+        changedAt: new Date(),
       },
     ],
   });
 
-  try {
-    if (type === "subscription") {
-      const subscription = await razorpay.subscriptions.create({
-        plan_id: razorpayPlanId,
-        total_count: 120,
-        quantity: 1,
-        customer_notify: 1,
-        notes: {
-          paymentRecordId: payment._id.toString(),
-          userId: userId.toString(),
-          itemCode,
-        },
-      });
+  await payment.save();
 
-      payment.gateway.razorpaySubscriptionId = subscription.id;
-      payment.status = "pending";
-      payment.statusHistory.push({
-        status: "pending",
-        source: "system",
-        reason: "Razorpay subscription created",
-      });
+  try {
+    if (type === "subscription" && razorpayPlanId) {
+      try {
+        const subscription = await razorpay.subscriptions.create({
+          plan_id: razorpayPlanId,
+          total_count: billingCycle === "yearly" ? 10 : 120,
+          quantity: 1,
+          customer_notify: 1,
+          notes: {
+            paymentRecordId: payment._id.toString(),
+            userId: normalizedUserId.toString(),
+            itemCode: planCode,
+          },
+        });
+
+        payment.gateway.razorpaySubscriptionId = subscription.id;
+        addHistory(payment, "pending", "system", "Razorpay subscription created");
+      } catch (subErr) {
+        console.warn("Razorpay subscription creation failed, falling back to Order:", subErr.message);
+        const order = await razorpay.orders.create({
+          amount,
+          currency: "INR",
+          receipt: payment._id.toString().slice(-40),
+          notes: {
+            paymentRecordId: payment._id.toString(),
+            userId: normalizedUserId ? normalizedUserId.toString() : "anonymous",
+            type,
+            itemCode: planCode || "",
+          },
+        });
+
+        payment.gateway.razorpayOrderId = order.id;
+        addHistory(payment, "pending", "system", "Razorpay order created for subscription fallback");
+      }
     } else {
       const order = await razorpay.orders.create({
         amount,
         currency: "INR",
-        receipt: payment._id.toString(),
+        receipt: payment._id.toString().slice(-40),
         notes: {
           paymentRecordId: payment._id.toString(),
-          userId: userId.toString(),
+          userId: normalizedUserId ? normalizedUserId.toString() : "anonymous",
           type,
-          itemCode,
+          itemCode: itemCode || planCode || "",
         },
       });
 
       payment.gateway.razorpayOrderId = order.id;
-      payment.status = "pending";
-      payment.statusHistory.push({
-        status: "pending",
-        source: "system",
-        reason: "Razorpay order created",
-      });
+      addHistory(payment, "pending", "system", `Razorpay order created for ${type}`);
     }
 
     await payment.save();
 
-    // Never return the key secret or the full payment document.
-    return {
-      paymentId: payment._id,
-      type: payment.type,
-      amount: payment.amount,
-      currency: payment.currency,
-      status: payment.status,
-      orderId: payment.gateway.razorpayOrderId,
-      subscriptionId: payment.gateway.razorpaySubscriptionId,
-      keyId: process.env.RAZORPAY_KEY_ID,
-    };
+    return serializePayment(payment);
   } catch (error) {
-    // The gateway may have created a resource even if saving failed.
-    // Reconcile such cases instead of blindly retrying a new checkout.
-    console.error("Payment creation needs reconciliation:", {
-      paymentId: payment._id.toString(),
-      message: error.message,
-    });
-
-    throw new Error("Unable to complete checkout creation");
+    console.error("PAYMENT CREATION ERROR:", error);
+    if (
+      process.env.RAZORPAY_KEY_ID === "your_key_id" ||
+      (error.error && error.error.description?.includes("Unauthorized"))
+    ) {
+      throw new Error(
+        "Razorpay credentials not yet configured. Please add your RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in starterKit-backend/.env."
+      );
+    }
+    throw new Error(error.message || "Unable to complete checkout creation");
   }
 }
 
-// Verify checkout signature and confirm the gateway's actual payment state.
 async function verifyPayment({
   userId,
   razorpay_order_id,
   razorpay_subscription_id,
   razorpay_payment_id,
   razorpay_signature,
+  allowAnonymous = false,
 }) {
   assertConfig();
 
   if (
-    !userId ||
     typeof razorpay_payment_id !== "string" ||
     typeof razorpay_signature !== "string"
   ) {
@@ -264,34 +334,62 @@ async function verifyPayment({
 
   const isSubscription = Boolean(razorpay_subscription_id);
 
-  const payment = await Payment.findOne({
-    user: userId,
-    ...(isSubscription
-      ? {
-          "gateway.razorpaySubscriptionId":
-            razorpay_subscription_id,
-        }
-      : {
-          "gateway.razorpayOrderId": razorpay_order_id,
-        }),
-  });
+  if (allowAnonymous && (isSubscription || userId)) {
+    throw new Error("Invalid anonymous payment verification request");
+  }
+
+  if (!allowAnonymous && !userId) {
+    throw new Error("Login is required to verify this payment");
+  }
+
+  if (userId && !mongoose.Types.ObjectId.isValid(userId)) {
+    throw new Error("Invalid userId");
+  }
+
+  if (isSubscription && typeof razorpay_subscription_id !== "string") {
+    throw new Error("Invalid subscription reference");
+  }
+
+  if (!isSubscription && typeof razorpay_order_id !== "string") {
+    throw new Error("Invalid order reference");
+  }
+
+  const lookup = isSubscription
+    ? {
+        "gateway.razorpaySubscriptionId": razorpay_subscription_id,
+        type: "subscription",
+      }
+    : {
+        "gateway.razorpayOrderId": razorpay_order_id,
+      };
+
+  if (allowAnonymous) {
+    lookup.type = "contribution";
+    lookup.user = { $exists: false };
+  } else {
+    lookup.user = new mongoose.Types.ObjectId(userId);
+  }
+
+  const payment = await Payment.findOne(lookup);
 
   if (!payment) {
     throw new Error("Payment record not found");
   }
 
-  // Verify using the gateway ID stored on our server.
+  if (payment.type !== "contribution" && !payment.user) {
+    throw new Error("Authenticated payment record required");
+  }
+
+  if (allowAnonymous && payment.type !== "contribution") {
+    throw new Error("Anonymous verification is only allowed for contributions");
+  }
+
   const gatewayId = isSubscription
     ? payment.gateway.razorpaySubscriptionId
     : payment.gateway.razorpayOrderId;
 
-  if (
-    !gatewayId ||
-    (isSubscription
-      ? gatewayId !== razorpay_subscription_id
-      : gatewayId !== razorpay_order_id)
-  ) {
-    throw new Error("Payment reference mismatch");
+  if (!gatewayId) {
+    throw new Error("Payment reference not found");
   }
 
   const signatureMessage = isSubscription
@@ -302,10 +400,35 @@ async function verifyPayment({
     throw new Error("Invalid payment signature");
   }
 
-  // A valid signature alone does not prove that the payment was captured.
-  const gatewayPayment = await razorpay.payments.fetch(
-    razorpay_payment_id
-  );
+  if (payment.status === "captured") {
+    if (
+      payment.gateway.razorpayPaymentId === razorpay_payment_id &&
+      payment.gateway.razorpaySignatureVerified
+    ) {
+      return {
+        paymentId: payment._id,
+        status: payment.status,
+        type: payment.type,
+        alreadyVerified: true,
+      };
+    }
+
+    throw new Error("Payment has already been verified");
+  }
+
+  if (
+    [
+      "refunded",
+      "partially_refunded",
+      "cancelled",
+      "expired",
+      "failed",
+    ].includes(payment.status)
+  ) {
+    throw new Error("Payment is no longer eligible for verification");
+  }
+
+  const gatewayPayment = await razorpay.payments.fetch(razorpay_payment_id);
 
   if (
     gatewayPayment.status !== "captured" ||
@@ -326,23 +449,6 @@ async function verifyPayment({
     throw new Error("Order reference mismatch");
   }
 
-  // Do not overwrite an already verified payment with a new status.
-  if (payment.status === "captured") {
-    return {
-      paymentId: payment._id,
-      status: payment.status,
-      alreadyVerified: true,
-    };
-  }
-
-  if (
-    ["refunded", "partially_refunded", "cancelled", "expired"].includes(
-      payment.status
-    )
-  ) {
-    throw new Error("Payment is no longer eligible for verification");
-  }
-
   payment.gateway.razorpayPaymentId = razorpay_payment_id;
   payment.gateway.razorpaySignatureVerified = true;
   payment.capturedAt = new Date();
@@ -351,26 +457,43 @@ async function verifyPayment({
     payment,
     "captured",
     "system",
-    "Checkout signature and captured payment verified"
+    "Checkout signature and captured payment verified",
   );
 
   await payment.save();
 
-  // IMPORTANT:
-  // Activate subscriptions / grant source-code access through
-  // a separate idempotent entitlement service or verified webhooks.
-  // Do not grant access from an unverified frontend callback.
+  let userSubscription = null;
+  if (payment.type === "subscription" && payment.user) {
+    const expiresAt = new Date();
+    if (payment.subscription?.billingCycle === "yearly") {
+      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    } else {
+      expiresAt.setMonth(expiresAt.getMonth() + 1);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      payment.user,
+      {
+        "subscription.plan": "pro",
+        "subscription.status": "active",
+        "subscription.startedAt": new Date(),
+        "subscription.expiresAt": expiresAt,
+        "subscription.paymentId": razorpay_payment_id,
+      },
+      { new: true }
+    );
+
+    if (updatedUser) {
+      userSubscription = updatedUser.subscription;
+    }
+  }
 
   return {
     paymentId: payment._id,
     status: payment.status,
     type: payment.type,
+    subscription: userSubscription || (payment.type === "subscription" ? { plan: "pro", status: "active" } : null),
   };
-}
-
-// Keep the helper explicit instead of silently accepting malformed IDs.
-function mongooseIdIsValid(id) {
-  return require("mongoose").Types.ObjectId.isValid(id);
 }
 
 module.exports = {

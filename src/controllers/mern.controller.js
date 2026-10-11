@@ -389,6 +389,356 @@ exports.getResources = async (req, res) => {
   }
 };
 
+const proSubscriptionModules = [
+  {
+    id: "payment-gateways",
+    title: "Integration of Payment Gateways",
+    tagline: "Razorpay & Stripe end-to-end integration with webhooks and signature verification",
+    category: "Fintech & Payments",
+    icon: "CreditCard",
+    overview: "Master full-cycle payment integrations in full-stack MERN apps. Learn order lifecycle, webhook security, RBI recurring mandate compliance, and idempotent transactions.",
+    topics: [
+      {
+        title: "Razorpay Standard Checkout & Orders API",
+        description: "Generate server-side order IDs, render client Razorpay checkout script, and handle payment callbacks safely.",
+        code: `// Express.js Razorpay Order Creation
+const Razorpay = require("razorpay");
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+router.post("/api/pay/order", async (req, res) => {
+  const { amount, planId } = req.body;
+  const order = await razorpay.orders.create({
+    amount: amount * 100, // in paise
+    currency: "INR",
+    receipt: \`rcpt_\${Date.now()}\`,
+    notes: { planId, userId: req.user.id },
+  });
+  res.json({ success: true, orderId: order.id, key: process.env.RAZORPAY_KEY_ID });
+});`,
+      },
+      {
+        title: "HMAC-SHA256 Cryptographic Signature Verification",
+        description: "Prevent payment spoofing by verifying signature hash against Razorpay Secret Key.",
+        code: `const crypto = require("crypto");
+
+function verifyRazorpaySignature({ orderId, paymentId, signature, secret }) {
+  const body = \`\${orderId}|\${paymentId}\`;
+  const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+}`,
+      },
+      {
+        title: "Robust Webhooks & Idempotency",
+        description: "Handle async payment events (order.paid, subscription.charged, refund.processed) with idempotency keys.",
+        code: `app.post("/api/payments/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const signature = req.headers["x-razorpay-signature"];
+  const isValid = Razorpay.validateWebhookSignature(req.body, signature, secret);
+  if (!isValid) return res.status(400).send("Invalid signature");
+
+  const event = JSON.parse(req.body.toString());
+  // Process event with idempotency check in MongoDB
+  res.json({ status: "ok" });
+});`,
+      },
+      {
+        title: "Stripe Recurring Subscriptions & Customer Portal",
+        description: "Stripe Billing, monthly & annual recurring tiers, webhook handling, and self-serve customer billing portal.",
+        code: `const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+const session = await stripe.checkout.sessions.create({
+  mode: "subscription",
+  payment_method_types: ["card"],
+  line_items: [{ price: "price_12345", quantity: 1 }],
+  customer_email: user.email,
+  success_url: "https://yourapp.com/dashboard?session_id={CHECKOUT_SESSION_ID}",
+  cancel_url: "https://yourapp.com/pricing",
+});`,
+      },
+    ],
+  },
+  {
+    id: "technical-architecture",
+    title: "Technical Architecture & Clean Code",
+    tagline: "Enterprise MERN design patterns, TypeScript strict typing, and resilient service layer",
+    category: "Architecture & Engineering",
+    icon: "Layers",
+    overview: "Build scalable, clean architectures used in high-growth startups. Implement Controller-Service-Repository pattern, centralized error handling, and type safety.",
+    topics: [
+      {
+        title: "Modular Clean Architecture (Controller-Service-Repository)",
+        description: "Decouple routing logic from business services and database queries for maximum testability.",
+        code: `// Service Layer (User Management)
+class UserService {
+  constructor(userRepo, emailService) {
+    this.userRepo = userRepo;
+    this.emailService = emailService;
+  }
+  async register(dto) {
+    const existing = await this.userRepo.findByEmail(dto.email);
+    if (existing) throw new AppError("Email already in use", 409);
+    const user = await this.userRepo.create(dto);
+    await this.emailService.sendWelcome(user);
+    return user;
+  }
+}`,
+      },
+      {
+        title: "End-to-End TypeScript Validation with Zod",
+        description: "Enforce contract safety between client and server with runtime schema verification.",
+        code: `import { z } from "zod";
+
+export const CreateUserSchema = z.object({
+  name: z.string().min(2, "Name too short").max(50),
+  email: z.string().email("Invalid email format"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  role: z.enum(["user", "admin"]).default("user"),
+});
+
+export type CreateUserInput = z.infer<typeof CreateUserSchema>;`,
+      },
+      {
+        title: "Centralized Global Error Handler & Logging",
+        description: "Graceful error trapping with custom operational errors, stack trace suppression in production, and structured Winston logging.",
+        code: `class AppError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.isOperational = true;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+app.use((err, req, res, next) => {
+  const status = err.statusCode || 500;
+  res.status(status).json({
+    success: false,
+    message: err.message || "Internal Server Error",
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+  });
+});`,
+      },
+    ],
+  },
+  {
+    id: "seo-performance",
+    title: "SEO & Web Performance Mastery",
+    tagline: "Dynamic OpenGraph, automated XML sitemaps, JSON-LD schemas, and Core Web Vitals",
+    category: "Growth & Visibility",
+    icon: "Search",
+    overview: "Get ranked on search engines and achieve a 100/100 Lighthouse score. Discover SSR/SSG rendering, structured metadata, and performance tuning.",
+    topics: [
+      {
+        title: "Next.js 14+ Dynamic Metadata & Open Graph Tags",
+        description: "Automatically generate rich preview social cards on Twitter/LinkedIn for any page or route.",
+        code: `import type { Metadata, ResolvingMetadata } from "next";
+
+export async function generateMetadata({ params }): Promise<Metadata> {
+  const item = await fetchProduct(params.id);
+  return {
+    title: \`\${item.title} | DevKit\`,
+    description: item.summary,
+    openGraph: {
+      title: item.title,
+      description: item.summary,
+      images: [{ url: item.imageUrl, width: 1200, height: 630 }],
+      type: "website",
+    },
+    twitter: { card: "summary_large_image", title: item.title },
+  };
+}`,
+      },
+      {
+        title: "Automated Dynamic Sitemaps (sitemap.ts) & robots.txt",
+        description: "Serve search engine spiders with fresh dynamic sitemaps with daily update priorities.",
+        code: `// app/sitemap.ts
+import { MetadataRoute } from "next";
+
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  const posts = await getAllPosts();
+  const postUrls = posts.map((p) => ({
+    url: \`https://devkit.dev/blog/\${p.slug}\`,
+    lastModified: new Date(p.updatedAt),
+    changeFrequency: "weekly" as const,
+    priority: 0.8,
+  }));
+  return [
+    { url: "https://devkit.dev", lastModified: new Date(), priority: 1 },
+    ...postUrls,
+  ];
+}`,
+      },
+      {
+        title: "JSON-LD Structured Data Schema for Rich Google Snippets",
+        description: "Embed JSON-LD schemas to win star ratings, software badges, and FAQ rich snippets on Google.",
+        code: `export function JsonLdSchema() {
+  const schema = {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "DevKit MERN Platform",
+    operatingSystem: "Web",
+    applicationCategory: "DeveloperApplication",
+    offers: { "@type": "Offer", price: "299", priceCurrency: "INR" },
+    aggregateRating: { "@type": "AggregateRating", ratingValue: "4.9", ratingCount: "340" },
+  };
+  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }} />;
+}`,
+      },
+    ],
+  },
+  {
+    id: "third-party-apis",
+    title: "Integrating Third-Party APIs",
+    tagline: "OAuth 2.0 social auth, AI LLM streaming (OpenAI & Gemini), and cloud asset pipelines",
+    category: "Integrations & APIs",
+    icon: "PlugZap",
+    overview: "Connect enterprise third-party services smoothly: Google & GitHub OAuth, OpenAI/Gemini AI SDKs, Resend email triggers, and AWS S3 direct uploads.",
+    topics: [
+      {
+        title: "Google & GitHub OAuth 2.0 Single Sign-On",
+        description: "Integrate multi-provider social authentication with token exchange and profile sync.",
+        code: `const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+
+passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "/api/auth/google/callback"
+  },
+  async (accessToken, refreshToken, profile, done) => {
+    let user = await User.findOne({ googleId: profile.id });
+    if (!user) {
+      user = await User.create({
+        googleId: profile.id,
+        email: profile.emails[0].value,
+        name: profile.displayName,
+      });
+    }
+    return done(null, user);
+  }
+));`,
+      },
+      {
+        title: "AI Streaming with Google Gemini & OpenAI SDKs",
+        description: "Stream conversational AI responses token-by-token directly into React using Server-Sent Events.",
+        code: `import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+app.post("/api/ai/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  const result = await model.generateContentStream(req.body.prompt);
+  for await (const chunk of result.stream) {
+    res.write(\`data: \${JSON.stringify({ text: chunk.text() })}\\n\\n\`);
+  }
+  res.end();
+});`,
+      },
+      {
+        title: "Cloud File Uploads via AWS S3 Presigned URLs",
+        description: "Offload bandwidth by letting the client upload heavy images/videos directly to S3 with signed upload URLs.",
+        code: `import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+const s3 = new S3Client({ region: process.env.AWS_REGION });
+
+app.post("/api/upload/presign", async (req, res) => {
+  const { filename, fileType } = req.body;
+  const key = \`uploads/\${Date.now()}-\${filename}\`;
+  const command = new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: fileType });
+  const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+  res.json({ uploadUrl, key });
+});`,
+      },
+    ],
+  },
+  {
+    id: "scaling-applications",
+    title: "Scaling Applications & High Availability",
+    tagline: "Database indexing, Redis caching, job queues, load balancing, and containerization",
+    category: "DevOps & Scale",
+    icon: "Server",
+    overview: "Scale MERN architectures to handle 100,000+ daily concurrent users. Implement distributed Redis caches, BullMQ task runners, and Docker containers.",
+    topics: [
+      {
+        title: "MongoDB Indexing Strategies & Query Optimization",
+        description: "Avoid full collection scans (COLLSCAN) using compound indexes, TTL expiration indexes, and index intersection.",
+        code: `// Compound Index for High-Traffic Query
+userSchema.index({ organizationId: 1, createdAt: -1 });
+
+// Text Index for Instant Search
+snippetSchema.index({ title: "text", description: "text" });
+
+// Query Explain Plan Check
+const explain = await User.find({ organizationId: "org_1" })
+  .sort({ createdAt: -1 })
+  .explain("executionStats");
+console.log("Docs Examined vs Returned:", explain.executionStats.totalDocsExamined);`,
+      },
+      {
+        title: "Redis In-Memory Caching (Cache-Aside Pattern)",
+        description: "Speed up response times from 350ms to 4ms by caching expensive DB responses in Redis.",
+        code: `const Redis = require("ioredis");
+const redis = new Redis(process.env.REDIS_URL);
+
+async function getCachedData(key, fetcher, ttl = 3600) {
+  const cached = await redis.get(key);
+  if (cached) return JSON.parse(cached);
+
+  const fresh = await fetcher();
+  await redis.set(key, JSON.stringify(fresh), "EX", ttl);
+  return fresh;
+}`,
+      },
+      {
+        title: "Background Job Queues with BullMQ & Worker Nodes",
+        description: "Process slow jobs (video compression, PDF generation, batch emails) asynchronously without blocking HTTP requests.",
+        code: `const { Queue, Worker } = require("bullmq");
+
+const emailQueue = new Queue("emailQueue", { connection: redisConfig });
+
+// Dispatcher (API Route)
+await emailQueue.add("sendReport", { userId: "123", email: "user@example.com" }, { attempts: 3, backoff: { type: "exponential", delay: 2000 } });
+
+// Background Worker Process
+const worker = new Worker("emailQueue", async (job) => {
+  await sendComplexPdfReport(job.data);
+}, { connection: redisConfig });`,
+      },
+      {
+        title: "Production Docker & Multi-Stage Containers",
+        description: "Package the frontend and backend into lightweight, secure Docker containers with PM2 cluster clustering.",
+        code: `# Dockerfile (Node.js Backend Multi-Stage)
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+
+EXPOSE 5000
+CMD ["node", "server.js"]`,
+      },
+    ],
+  },
+];
+
+exports.getProContent = async (req, res) => {
+  try {
+    res.status(200).json({
+      success: true,
+      count: proSubscriptionModules.length,
+      modules: proSubscriptionModules,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 exports.getPlanDetails = async (req, res) => {
   try {
     res.status(200).json({
@@ -396,28 +746,42 @@ exports.getPlanDetails = async (req, res) => {
       currentPlan: {
         name: "Basic Plan",
         status: "Active",
-        price: "$0 / Forever",
+        price: "₹0 / Forever",
         features: [
           "Access to 25+ essential MERN Code Snippets",
           "Interactive 6-Step MERN Request Visualizer",
           "Line-by-line Zero-Knowledge explanations",
           "Curated GitHub Repositories & Cheat Sheets",
-          "3 Real-World Full-Stack Architecture Blueprints"
-        ]
+          "3 Real-World Full-Stack Architecture Blueprints",
+        ],
       },
       availableUpgrades: [
         {
           name: "Pro Developer Plan",
-          price: "$19 / month",
+          price: "₹299 / month",
+          yearlyPrice: "₹2,999 / year (Save 16%)",
+          itemCode: "pro_monthly",
+          yearlyItemCode: "pro_yearly",
           features: [
             "Everything in Basic Plan",
-            "50+ Production-ready MERN Full-Stack Starters",
+            "💳 Integration of Payment Gateways (Razorpay & Stripe end-to-end + Webhooks)",
+            "🏗️ Technical Architecture & Clean Code (Controller-Service-Repo & TypeScript Zod)",
+            "🔍 SEO Mastery & Web Performance (Dynamic OpenGraph, Sitemaps, JSON-LD Schema)",
+            "🔌 Integrating Third-Party APIs (Google/GitHub OAuth, Gemini AI, AWS S3)",
+            "🚀 Scaling Applications (Redis Cache-Aside, BullMQ Queues, MongoDB Indexes, Docker)",
+            "50+ Full-Stack Production Templates",
             "In-Browser Node & Mongo Live Playground Sandbox",
-            "AI Code Explainer & Debugger",
-            "1-on-1 Code Review & Discord VIP Access"
-          ]
-        }
-      ]
+            "1-on-1 Code Review & VIP Discord Access",
+          ],
+          modules: proSubscriptionModules.map((m) => ({
+            id: m.id,
+            title: m.title,
+            tagline: m.tagline,
+            category: m.category,
+            topicsCount: m.topics.length,
+          })),
+        },
+      ],
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

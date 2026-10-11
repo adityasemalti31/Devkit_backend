@@ -1,4 +1,3 @@
-
 const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
@@ -37,7 +36,7 @@ const refundSchema = new Schema(
       default: null,
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const statusHistorySchema = new Schema(
@@ -74,16 +73,18 @@ const statusHistorySchema = new Schema(
       default: Date.now,
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const paymentSchema = new Schema(
   {
     // User who initiated the payment
     user: {
-      type: Schema.Types.ObjectId,
+      type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: function () {
+        return this.type !== "contribution";
+      },
       index: true,
     },
 
@@ -292,7 +293,7 @@ const paymentSchema = new Schema(
     timestamps: true,
     versionKey: "__v",
     strict: "throw",
-  }
+  },
 );
 
 // A gateway payment/order should not belong to multiple records.
@@ -303,7 +304,7 @@ paymentSchema.index(
     partialFilterExpression: {
       "gateway.razorpayOrderId": { $type: "string" },
     },
-  }
+  },
 );
 
 paymentSchema.index(
@@ -313,14 +314,11 @@ paymentSchema.index(
     partialFilterExpression: {
       "gateway.razorpayPaymentId": { $type: "string" },
     },
-  }
+  },
 );
 
 // Prevent accidental duplicate checkout records.
-paymentSchema.index(
-  { user: 1, idempotencyKey: 1 },
-  { unique: true }
-);
+paymentSchema.index({ user: 1, idempotencyKey: 1 }, { unique: true });
 
 // Useful for payment history and reconciliation.
 paymentSchema.index({ user: 1, createdAt: -1 });

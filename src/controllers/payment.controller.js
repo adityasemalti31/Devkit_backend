@@ -1,14 +1,9 @@
-
 const paymentService = require("../service/payment.service");
 
-// Create checkout for subscription, contribution or source code.
 const createPayment = async (req, res, next) => {
   try {
-    const { type, itemCode, contributionAmount, idempotencyKey } =
-      req.body;
+    const { type, itemCode, contributionAmount, idempotencyKey } = req.body;
 
-    // User ID must come from authenticated middleware,
-    // never trust a user ID supplied by the frontend.
     const userId = req.user?._id;
 
     if (!userId) {
@@ -25,11 +20,24 @@ const createPayment = async (req, res, next) => {
       });
     }
 
+    if (!["subscription", "source_code"].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: "Unsupported payment type for this endpoint",
+      });
+    }
+
+    if (!itemCode || typeof itemCode !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Valid itemCode is required",
+      });
+    }
+
     const result = await paymentService.createPayment({
       userId,
       type,
       itemCode,
-      contributionAmount,
       idempotencyKey,
     });
 
@@ -43,7 +51,6 @@ const createPayment = async (req, res, next) => {
   }
 };
 
-// Verify checkout payment after Razorpay Checkout returns.
 const verifyPayment = async (req, res, next) => {
   try {
     const {
@@ -91,7 +98,84 @@ const verifyPayment = async (req, res, next) => {
   }
 };
 
+const createContribution = async (req, res, next) => {
+  try {
+    const { contributionAmount, idempotencyKey } = req.body;
+
+    if (
+      !Number.isSafeInteger(contributionAmount) ||
+      contributionAmount < 2000 ||
+      contributionAmount > 1000000
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Contribution must be between ₹20 and ₹10,000",
+      });
+    }
+
+    if (
+      typeof idempotencyKey !== "string" ||
+      idempotencyKey.length < 16 ||
+      idempotencyKey.length > 128
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid idempotencyKey is required",
+      });
+    }
+
+    const result = await paymentService.createPayment({
+      type: "contribution",
+      contributionAmount,
+      idempotencyKey,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Contribution checkout created successfully",
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const verifyContribution = async (req, res, next) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
+
+    if (
+      typeof razorpay_order_id !== "string" ||
+      typeof razorpay_payment_id !== "string" ||
+      typeof razorpay_signature !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Required contribution verification details are missing",
+      });
+    }
+
+    const result = await paymentService.verifyPayment({
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      allowAnonymous: true,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Contribution verified successfully",
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 module.exports = {
   createPayment,
   verifyPayment,
+  createContribution,
+  verifyContribution,
 };

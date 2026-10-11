@@ -37,6 +37,7 @@ const registerUser = async ({ name, email, password }) => {
       id: user._id,
       name: user.name,
       email: user.email,
+      subscription: user.subscription,
     },
   };
 };
@@ -69,11 +70,29 @@ const loginUser = async ({ email, password }) => {
       id: user._id,
       name: user.name,
       email: user.email,
+      subscription: user.subscription,
     },
+  };
+};
+
+const getCurrentUser = async (userId) => {
+  const user = await User.findById(userId).select("-password");
+  if (!user) {
+    const error = new Error("User not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    subscription: user.subscription,
   };
 };
 
 module.exports = {
   registerUser,
   loginUser,
+  getCurrentUser,
 };

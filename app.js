@@ -53,7 +53,8 @@ app.get("/", (req, res) => {
 // Future routes
 app.use("/api/auth", require('./src/routes/auth.routes'));
 app.use("/api/mern", require('./src/routes/mern.routes'));
-app.use("/api/pay", require('./src/routes/payment.routes'));
+app.use("/api/payments", require('./src/routes/payment.routes'));
+app.use("/api/component", require('./src/routes/component.routes'));
 // app.use("/api/users", userRoutes);
 // app.use("/api/resources", resourceRoutes);
 // app.use("/api/projects", projectRoutes);
