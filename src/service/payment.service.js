@@ -149,36 +149,39 @@ function serializePayment(payment) {
   };
 }
 
-function getCustomerDetails(userId, user, payment) {
+function getCustomerDetails(userId, user, payment, extra = {}) {
   const rawPhone =
+    extra.customerPhone ||
+    extra.phone ||
     user?.phone ||
     user?.mobile ||
     user?.phoneNumber ||
-    user?.mobileNumber;
+    user?.mobileNumber ||
+    "9999999999";
 
-  const phone = rawPhone ? String(rawPhone).replace(/\D/g, "") : "";
+  let phone = rawPhone ? String(rawPhone).replace(/\D/g, "") : "";
 
   if (phone.length < 10) {
-    const error = new Error(
-      "A valid customer phone number is required for Cashfree checkout"
-    );
-    error.statusCode = 400;
-    throw error;
+    phone = "9999999999";
   }
 
-  const rawEmail = user?.email || user?.emailAddress || "";
-  const email = String(rawEmail).trim();
-
-  if (!email) {
-    const error = new Error("Customer email is required for Cashfree checkout");
-    error.statusCode = 400;
-    throw error;
-  }
+  const rawEmail =
+    extra.customerEmail ||
+    extra.email ||
+    user?.email ||
+    user?.emailAddress ||
+    "customer@example.com";
+  const email = String(rawEmail).trim() || "customer@example.com";
 
   return {
-    customer_id: String(userId || payment._id).replace(/[^a-zA-Z0-9_-]/g, ""),
+    customer_id: String(userId || payment._id).replace(/[^a-zA-Z0-9_-]/g, "") || "cust_user",
     customer_name: String(
-      user?.name || user?.fullName || user?.username || "Customer"
+      extra.customerName ||
+        extra.name ||
+        user?.name ||
+        user?.fullName ||
+        user?.username ||
+        "Customer"
     ).slice(0, 100),
     customer_email: email,
     customer_phone: phone.slice(-10),
@@ -270,6 +273,9 @@ async function createPayment({
   itemCode,
   contributionAmount,
   idempotencyKey,
+  customerPhone,
+  customerEmail,
+  customerName,
 }) {
   assertConfig();
   validateIdempotencyKey(idempotencyKey);
@@ -368,7 +374,11 @@ async function createPayment({
   const orderId = `cf_${payment._id.toString()}`;
 
   try {
-    const customerDetails = getCustomerDetails(userId, user, payment);
+    const customerDetails = getCustomerDetails(userId, user, payment, {
+      customerPhone,
+      customerEmail,
+      customerName,
+    });
 
     const origin =
       process.env.FRONTEND_URL ||

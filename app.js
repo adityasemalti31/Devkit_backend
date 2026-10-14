@@ -12,12 +12,7 @@ const app = express();
 app.use(helmet());
 
 // CORS
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
-    credentials: true,
-  })
-);
+app.use(cors());
 
 // Logging
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));

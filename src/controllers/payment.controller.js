@@ -1,20 +1,30 @@
 const paymentService = require("../service/payment.service");
-
 function sendError(res, error) {
-  const statusCode = error.statusCode || 500;
+  console.error("Payment error:", {
+    message: error.message,
+    statusCode: error.statusCode,
+    cashfreeResponse: error.cashfreeResponse,
+  });
 
-  return res.status(statusCode).json({
+  return res.status(error.statusCode || 500).json({
     success: false,
-    message:
-      statusCode === 500
-        ? "Something went wrong while processing the payment"
-        : error.message,
+    message: error.message || "Payment processing failed",
   });
 }
 
 exports.createPayment = async (req, res) => {
   try {
-    const { type, itemCode, idempotencyKey } = req.body;
+    const {
+      type,
+      itemCode,
+      idempotencyKey,
+      customerPhone,
+      customerEmail,
+      customerName,
+      phone,
+      email,
+      name,
+    } = req.body;
 
     if (!["subscription", "source_code"].includes(type)) {
       return res.status(400).json({
@@ -35,6 +45,9 @@ exports.createPayment = async (req, res) => {
       type,
       itemCode,
       idempotencyKey,
+      customerPhone: customerPhone || phone,
+      customerEmail: customerEmail || email || req.user?.email,
+      customerName: customerName || name || req.user?.name,
     });
 
     return res.status(201).json({
@@ -80,7 +93,16 @@ exports.verifyPayment = async (req, res) => {
 
 exports.createContribution = async (req, res) => {
   try {
-    const { contributionAmount, idempotencyKey } = req.body;
+    const {
+      contributionAmount,
+      idempotencyKey,
+      customerPhone,
+      customerEmail,
+      customerName,
+      phone,
+      email,
+      name,
+    } = req.body;
 
     if (!Number.isSafeInteger(contributionAmount)) {
       return res.status(400).json({
@@ -100,6 +122,9 @@ exports.createContribution = async (req, res) => {
       type: "contribution",
       contributionAmount,
       idempotencyKey,
+      customerPhone: customerPhone || phone,
+      customerEmail: customerEmail || email,
+      customerName: customerName || name,
     });
 
     return res.status(201).json({
