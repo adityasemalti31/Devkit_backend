@@ -1,41 +1,37 @@
 const paymentService = require("../service/payment.service");
 
-const createPayment = async (req, res, next) => {
+function sendError(res, error) {
+  const statusCode = error.statusCode || 500;
+
+  return res.status(statusCode).json({
+    success: false,
+    message:
+      statusCode === 500
+        ? "Something went wrong while processing the payment"
+        : error.message,
+  });
+}
+
+exports.createPayment = async (req, res) => {
   try {
-    const { type, itemCode, contributionAmount, idempotencyKey } = req.body;
-
-    const userId = req.user?._id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
-    }
-
-    if (!idempotencyKey) {
-      return res.status(400).json({
-        success: false,
-        message: "Idempotency key is required",
-      });
-    }
+    const { type, itemCode, idempotencyKey } = req.body;
 
     if (!["subscription", "source_code"].includes(type)) {
       return res.status(400).json({
         success: false,
-        message: "Unsupported payment type for this endpoint",
+        message: "Invalid payment type",
       });
     }
 
-    if (!itemCode || typeof itemCode !== "string") {
+    if (!itemCode || !idempotencyKey) {
       return res.status(400).json({
         success: false,
-        message: "Valid itemCode is required",
+        message: "itemCode and idempotencyKey are required",
       });
     }
 
-    const result = await paymentService.createPayment({
-      userId,
+    const payment = await paymentService.createPayment({
+      userId: req.user?._id || req.user?.id,
       type,
       itemCode,
       idempotencyKey,
@@ -43,88 +39,64 @@ const createPayment = async (req, res, next) => {
 
     return res.status(201).json({
       success: true,
-      message: "Checkout created successfully",
-      data: result,
+      message: "Cashfree payment order created",
+      data: payment,
     });
   } catch (error) {
-    return next(error);
+    return sendError(res, error);
   }
 };
 
-const verifyPayment = async (req, res, next) => {
+exports.verifyPayment = async (req, res) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_subscription_id,
-      razorpay_payment_id,
-      razorpay_signature,
-    } = req.body;
+    const orderId =
+      req.body.orderId ||
+      req.body.order_id ||
+      req.query.order_id;
 
-    const userId = req.user?._id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
-    }
-
-    if (
-      !razorpay_payment_id ||
-      !razorpay_signature ||
-      (!razorpay_order_id && !razorpay_subscription_id)
-    ) {
+    if (!orderId) {
       return res.status(400).json({
         success: false,
-        message: "Required payment verification details are missing",
+        message: "Cashfree orderId is required",
       });
     }
 
     const result = await paymentService.verifyPayment({
-      userId,
-      razorpay_order_id,
-      razorpay_subscription_id,
-      razorpay_payment_id,
-      razorpay_signature,
+      userId: req.user?._id || req.user?.id,
+      orderId,
     });
 
-    return res.status(200).json({
+    return res.status(result.verified ? 200 : 202).json({
       success: true,
-      message: "Payment verified successfully",
+      message: result.verified
+        ? "Payment verified successfully"
+        : "Payment is not completed yet",
       data: result,
     });
   } catch (error) {
-    return next(error);
+    return sendError(res, error);
   }
 };
 
-const createContribution = async (req, res, next) => {
+exports.createContribution = async (req, res) => {
   try {
     const { contributionAmount, idempotencyKey } = req.body;
 
-    if (
-      !Number.isSafeInteger(contributionAmount) ||
-      contributionAmount < 2000 ||
-      contributionAmount > 1000000
-    ) {
+    if (!Number.isSafeInteger(contributionAmount)) {
       return res.status(400).json({
         success: false,
-        message: "Contribution must be between ₹20 and ₹10,000",
+        message: "Contribution amount must be an integer in paise",
       });
     }
 
-    if (
-      typeof idempotencyKey !== "string" ||
-      idempotencyKey.length < 16 ||
-      idempotencyKey.length > 128
-    ) {
+    if (!idempotencyKey) {
       return res.status(400).json({
         success: false,
-        message: "A valid idempotencyKey is required",
+        message: "idempotencyKey is required",
       });
     }
 
-    const result = await paymentService.createPayment({
+    const payment = await paymentService.createPayment({
       type: "contribution",
       contributionAmount,
       idempotencyKey,
@@ -132,50 +104,70 @@ const createContribution = async (req, res, next) => {
 
     return res.status(201).json({
       success: true,
-      message: "Contribution checkout created successfully",
-      data: result,
+      message: "Contribution payment order created",
+      data: payment,
     });
   } catch (error) {
-    return next(error);
+    return sendError(res, error);
   }
 };
 
-const verifyContribution = async (req, res, next) => {
+exports.verifyContribution = async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
-      req.body;
+    const orderId =
+      req.body.orderId ||
+      req.body.order_id ||
+      req.query.order_id;
 
-    if (
-      typeof razorpay_order_id !== "string" ||
-      typeof razorpay_payment_id !== "string" ||
-      typeof razorpay_signature !== "string"
-    ) {
+    if (!orderId) {
       return res.status(400).json({
         success: false,
-        message: "Required contribution verification details are missing",
+        message: "Cashfree orderId is required",
       });
     }
 
-    const result = await paymentService.verifyPayment({
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      allowAnonymous: true,
-    });
+    const result = await paymentService.verifyContribution({ orderId });
 
-    return res.status(200).json({
+    return res.status(result.verified ? 200 : 202).json({
       success: true,
-      message: "Contribution verified successfully",
+      message: result.verified
+        ? "Contribution verified successfully"
+        : "Contribution payment is not completed yet",
       data: result,
     });
   } catch (error) {
-    return next(error);
+    return sendError(res, error);
   }
 };
 
-module.exports = {
-  createPayment,
-  verifyPayment,
-  createContribution,
-  verifyContribution,
+exports.cashfreeWebhook = async (req, res) => {
+  try {
+    const signature = req.get("x-webhook-signature");
+    const timestamp = req.get("x-webhook-timestamp");
+
+    if (!Buffer.isBuffer(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "Webhook raw body is not configured",
+      });
+    }
+
+    const result = await paymentService.handleCashfreeWebhook({
+      rawBody: req.body.toString("utf8"),
+      timestamp,
+      signature,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Cashfree webhook error:", error.message);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message:
+        error.statusCode === 401
+          ? "Invalid webhook signature"
+          : "Webhook processing failed",
+    });
+  }
 };

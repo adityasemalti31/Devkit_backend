@@ -78,7 +78,6 @@ const statusHistorySchema = new Schema(
 
 const paymentSchema = new Schema(
   {
-    // User who initiated the payment
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -88,7 +87,6 @@ const paymentSchema = new Schema(
       index: true,
     },
 
-    // Purpose of this transaction
     type: {
       type: String,
       required: true,
@@ -101,7 +99,6 @@ const paymentSchema = new Schema(
       index: true,
     },
 
-    // What the user is paying for
     purpose: {
       name: {
         type: String,
@@ -110,7 +107,6 @@ const paymentSchema = new Schema(
         maxlength: 200,
       },
 
-      // Stable internal identifier, e.g. "pro_monthly"
       itemCode: {
         type: String,
         trim: true,
@@ -118,21 +114,17 @@ const paymentSchema = new Schema(
         default: null,
       },
 
-      // Internal resource/project ID, when applicable
       resourceId: {
         type: Schema.Types.ObjectId,
         default: null,
       },
 
-      // Snapshot of the product/plan at checkout
       metadata: {
         type: Schema.Types.Mixed,
         default: () => ({}),
       },
     },
 
-    // Money is always stored in the smallest currency unit.
-    // ₹299 = 29900 paise.
     amount: {
       type: Number,
       required: true,
@@ -169,13 +161,27 @@ const paymentSchema = new Schema(
       index: true,
     },
 
-    // Gateway references and verification information
     gateway: {
       provider: {
         type: String,
-        enum: ["razorpay"],
-        default: "razorpay",
+        enum: ["razorpay", "cashfree"],
+        default: "cashfree",
         required: true,
+      },
+
+      cashfreeOrderId: {
+        type: String,
+        default: null,
+      },
+
+      cashfreePaymentId: {
+        type: String,
+        default: null,
+      },
+
+      cashfreePaymentSessionId: {
+        type: String,
+        default: null,
       },
 
       razorpayOrderId: {
@@ -198,8 +204,6 @@ const paymentSchema = new Schema(
         default: false,
       },
 
-      // Latest relevant webhook details.
-      // Store individual webhook events in a separate collection.
       lastWebhookEventId: {
         type: String,
         default: null,
@@ -216,7 +220,6 @@ const paymentSchema = new Schema(
       },
     },
 
-    // Optional recurring billing information
     subscription: {
       planCode: {
         type: String,
@@ -240,7 +243,6 @@ const paymentSchema = new Schema(
       },
     },
 
-    // Payment failure details; never store secrets here
     failure: {
       code: {
         type: String,
@@ -259,20 +261,17 @@ const paymentSchema = new Schema(
       },
     },
 
-    // Multiple partial refunds can belong to one payment
     refunds: {
       type: [refundSchema],
       default: [],
     },
 
-    // Unique per checkout attempt; helps prevent duplicate creation.
     idempotencyKey: {
       type: String,
       required: true,
       immutable: true,
     },
 
-    // Optional checkout expiry
     expiresAt: {
       type: Date,
       default: null,
@@ -283,7 +282,6 @@ const paymentSchema = new Schema(
       default: null,
     },
 
-    // Audit trail of status changes
     statusHistory: {
       type: [statusHistorySchema],
       default: [],
@@ -296,7 +294,26 @@ const paymentSchema = new Schema(
   },
 );
 
-// A gateway payment/order should not belong to multiple records.
+paymentSchema.index(
+  { "gateway.cashfreeOrderId": 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      "gateway.cashfreeOrderId": { $type: "string" },
+    },
+  },
+);
+
+paymentSchema.index(
+  { "gateway.cashfreePaymentId": 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      "gateway.cashfreePaymentId": { $type: "string" },
+    },
+  },
+);
+
 paymentSchema.index(
   { "gateway.razorpayOrderId": 1 },
   {
@@ -317,10 +334,8 @@ paymentSchema.index(
   },
 );
 
-// Prevent accidental duplicate checkout records.
 paymentSchema.index({ user: 1, idempotencyKey: 1 }, { unique: true });
 
-// Useful for payment history and reconciliation.
 paymentSchema.index({ user: 1, createdAt: -1 });
 paymentSchema.index({ status: 1, createdAt: -1 });
 paymentSchema.index({ type: 1, status: 1, createdAt: -1 });

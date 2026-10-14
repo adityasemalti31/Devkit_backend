@@ -4,8 +4,17 @@ const router = express.Router();
 const paymentController = require("../controllers/payment.controller");
 const { protect } = require("../middleware/auth.middleware");
 
-router.post("/create", protect, paymentController.createPayment);
-router.post("/verify", protect, paymentController.verifyPayment);
+router.post(
+  "/create",
+  protect,
+  paymentController.createPayment
+);
+
+router.post(
+  "/verify",
+  protect,
+  paymentController.verifyPayment
+);
 
 router.post(
   "/contribution/create",
@@ -15,6 +24,12 @@ router.post(
 router.post(
   "/contribution/verify",
   paymentController.verifyContribution
+);
+
+router.post(
+  "/cashfree/webhook",
+  express.raw({ type: "application/json" }),
+  paymentController.cashfreeWebhook
 );
 
 module.exports = router;

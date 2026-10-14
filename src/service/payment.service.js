@@ -1,90 +1,132 @@
 const crypto = require("crypto");
-const Razorpay = require("razorpay");
 const mongoose = require("mongoose");
-
 const Payment = require("../models/payment.model");
 const User = require("../models/user.model");
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+const CASHFREE_API_VERSION = "2025-01-01";
+
+const CASHFREE_BASE_URL =
+  process.env.CASHFREE_ENV === "PRODUCTION"
+    ? "https://api.cashfree.com/pg"
+    : "https://sandbox.cashfree.com/pg";
+
+const CONTRIBUTION_MIN = 2000;
+const CONTRIBUTION_MAX = 1000000;
 
 const PLANS = {
   pro_monthly: {
-    name: "DevKit Premium Monthly",
+    code: "pro_monthly",
+    name: "Pro Monthly Subscription",
     amount: 29900,
     billingCycle: "monthly",
-    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+    durationDays: 30,
   },
   pro_yearly: {
-    name: "DevKit Premium Yearly",
+    code: "pro_yearly",
+    name: "Pro Yearly Subscription",
     amount: 299900,
     billingCycle: "yearly",
-    razorpayPlanId: process.env.RAZORPAY_PRO_YEARLY_PLAN_ID,
+    durationDays: 365,
   },
   pro: {
-    name: "DevKit Premium Monthly",
+    code: "pro_monthly",
+    name: "Pro Monthly Subscription",
     amount: 29900,
     billingCycle: "monthly",
-    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+    durationDays: 30,
   },
   premium: {
-    name: "DevKit Premium Monthly",
+    code: "pro_monthly",
+    name: "Pro Monthly Subscription",
     amount: 29900,
     billingCycle: "monthly",
-    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+    durationDays: 30,
   },
   premium_monthly: {
-    name: "DevKit Premium Monthly",
+    code: "pro_monthly",
+    name: "Pro Monthly Subscription",
     amount: 29900,
     billingCycle: "monthly",
-    razorpayPlanId: process.env.RAZORPAY_PRO_MONTHLY_PLAN_ID,
+    durationDays: 30,
   },
   premium_yearly: {
-    name: "DevKit Premium Yearly",
+    code: "pro_yearly",
+    name: "Pro Yearly Subscription",
     amount: 299900,
     billingCycle: "yearly",
-    razorpayPlanId: process.env.RAZORPAY_PRO_YEARLY_PLAN_ID,
+    durationDays: 365,
   },
 };
 
 const SOURCE_CODES = {
   project_alpha: {
+    code: "project_alpha",
     name: "Project Alpha Source Code",
     amount: 49900,
   },
 };
 
-const CONTRIBUTION_MIN = 2000;
-const CONTRIBUTION_MAX = 1000000;
-
 function assertConfig() {
-  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-    throw new Error("Razorpay credentials are not configured");
+  if (!process.env.CASHFREE_APP_ID || !process.env.CASHFREE_SECRET_KEY) {
+    throw new Error("Cashfree credentials are missing in environment variables");
   }
 }
 
-function verifyHmac(message, signature) {
-  if (typeof signature !== "string" || !/^[a-f0-9]{64}$/i.test(signature)) {
-    return false;
+function validateIdempotencyKey(key) {
+  if (
+    typeof key !== "string" ||
+    key.length < 16 ||
+    key.length > 128 ||
+    !/^[a-zA-Z0-9_-]+$/.test(key)
+  ) {
+    const error = new Error("A valid idempotency key is required");
+    error.statusCode = 400;
+    throw error;
   }
-
-  const expected = crypto
-    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-    .update(message)
-    .digest();
-
-  const received = Buffer.from(signature, "hex");
-
-  return (
-    received.length === expected.length &&
-    crypto.timingSafeEqual(received, expected)
-  );
 }
 
-function addHistory(payment, status, source, reason) {
+async function cashfreeRequest(path, options = {}) {
+  assertConfig();
+
+  const response = await fetch(`${CASHFREE_BASE_URL}${path}`, {
+    method: options.method || "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-version": CASHFREE_API_VERSION,
+      "x-client-id": process.env.CASHFREE_APP_ID,
+      "x-client-secret": process.env.CASHFREE_SECRET_KEY,
+      ...(options.headers || {}),
+    },
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  });
+
+  const responseText = await response.text();
+  let data = {};
+
+  try {
+    data = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    data = { message: responseText };
+  }
+
+  if (!response.ok) {
+    const error = new Error(
+      data.message ||
+        data.type ||
+        `Cashfree request failed with status ${response.status}`
+    );
+
+    error.statusCode = response.status >= 500 ? 502 : response.status;
+    error.cashfreeResponse = data;
+    throw error;
+  }
+
+  return data;
+}
+
+function addHistory(payment, status, source = "system", reason = "") {
   payment.status = status;
+
   payment.statusHistory.push({
     status,
     source,
@@ -93,27 +135,133 @@ function addHistory(payment, status, source, reason) {
   });
 }
 
-function validateIdempotencyKey(idempotencyKey) {
-  if (
-    typeof idempotencyKey !== "string" ||
-    idempotencyKey.length < 16 ||
-    idempotencyKey.length > 128
-  ) {
-    throw new Error("A valid idempotencyKey is required");
-  }
-}
-
 function serializePayment(payment) {
   return {
-    paymentId: payment._id,
+    paymentId: payment._id.toString(),
     type: payment.type,
     amount: payment.amount,
     currency: payment.currency,
     status: payment.status,
-    orderId: payment.gateway?.razorpayOrderId || null,
-    subscriptionId: payment.gateway?.razorpaySubscriptionId || null,
-    keyId: process.env.RAZORPAY_KEY_ID,
+    orderId: payment.gateway?.cashfreeOrderId || null,
+    paymentSessionId: payment.gateway?.cashfreePaymentSessionId || null,
+    environment:
+      process.env.CASHFREE_ENV === "PRODUCTION" ? "production" : "sandbox",
   };
+}
+
+function getCustomerDetails(userId, user, payment) {
+  const rawPhone =
+    user?.phone ||
+    user?.mobile ||
+    user?.phoneNumber ||
+    user?.mobileNumber;
+
+  const phone = rawPhone ? String(rawPhone).replace(/\D/g, "") : "";
+
+  if (phone.length < 10) {
+    const error = new Error(
+      "A valid customer phone number is required for Cashfree checkout"
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const rawEmail = user?.email || user?.emailAddress || "";
+  const email = String(rawEmail).trim();
+
+  if (!email) {
+    const error = new Error("Customer email is required for Cashfree checkout");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    customer_id: String(userId || payment._id).replace(/[^a-zA-Z0-9_-]/g, ""),
+    customer_name: String(
+      user?.name || user?.fullName || user?.username || "Customer"
+    ).slice(0, 100),
+    customer_email: email,
+    customer_phone: phone.slice(-10),
+  };
+}
+
+function getPaymentDefinition({ type, itemCode, contributionAmount }) {
+  if (type === "subscription") {
+    const plan = PLANS[itemCode];
+
+    if (!plan) {
+      const error = new Error("Invalid subscription plan");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return {
+      type,
+      itemCode: plan.code,
+      name: plan.name,
+      amount: plan.amount,
+      plan,
+    };
+  }
+
+  if (type === "source_code") {
+    const item = SOURCE_CODES[itemCode];
+
+    if (!item) {
+      const error = new Error("Invalid source-code item");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return {
+      type,
+      itemCode: item.code,
+      name: item.name,
+      amount: item.amount,
+    };
+  }
+
+  if (type === "contribution") {
+    const amount = Number(contributionAmount);
+
+    if (
+      !Number.isSafeInteger(amount) ||
+      amount < CONTRIBUTION_MIN ||
+      amount > CONTRIBUTION_MAX
+    ) {
+      const error = new Error(
+        "Contribution must be between ₹20 and ₹10,000"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return {
+      type,
+      itemCode: null,
+      name: "Contribution",
+      amount,
+    };
+  }
+
+  const error = new Error("Unsupported payment type");
+  error.statusCode = 400;
+  throw error;
+}
+
+async function findExistingPayment({ userId, idempotencyKey, type }) {
+  const query = {
+    idempotencyKey,
+    type,
+  };
+
+  if (userId) {
+    query.user = userId;
+  } else {
+    query.user = { $exists: false };
+  }
+
+  return Payment.findOne(query);
 }
 
 async function createPayment({
@@ -126,377 +274,481 @@ async function createPayment({
   assertConfig();
   validateIdempotencyKey(idempotencyKey);
 
-  const isContribution = type === "contribution";
-  let normalizedUserId = null;
-
-  if (userId) {
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      throw new Error("Invalid userId");
-    }
-
-    normalizedUserId = new mongoose.Types.ObjectId(userId);
+  if (userId && !mongoose.isValidObjectId(userId)) {
+    const error = new Error("Invalid user ID");
+    error.statusCode = 400;
+    throw error;
   }
 
-  if (!isContribution && !normalizedUserId) {
-    throw new Error("Login is required for this payment");
-  }
-
-  if (!["subscription", "contribution", "source_code"].includes(type)) {
-    throw new Error("Unsupported payment type");
-  }
-
-  const existingQuery = {
-    idempotencyKey,
-    ...(normalizedUserId
-      ? { user: normalizedUserId }
-      : { user: { $exists: false } }),
-  };
-
-  const existing = await Payment.findOne(existingQuery);
-
-  if (existing) {
-    if (existing.type !== type) {
-      throw new Error("Idempotency key was already used for another payment");
-    }
-
-    if (existing.status === "created" || existing.status === "pending") {
-      if (
-        existing.gateway?.razorpayOrderId ||
-        existing.gateway?.razorpaySubscriptionId
-      ) {
-        return serializePayment(existing);
-      }
-
-      throw new Error(
-        "Payment creation is being reconciled. Please retry shortly.",
-      );
-    }
-
-    if (existing.status === "captured") {
-      throw new Error("This payment has already been completed");
-    }
-
-    throw new Error("This idempotency key cannot be reused");
-  }
-
-  let amount;
-  let name;
-  let planCode = null;
-  let billingCycle = null;
-  let razorpayPlanId = null;
-  let resourceId = null;
-
-  if (type === "subscription") {
-    const selectedCode = (itemCode && PLANS[itemCode]) ? itemCode : "pro_monthly";
-    const plan = PLANS[selectedCode];
-
-    if (!plan) {
-      throw new Error("Invalid subscription plan");
-    }
-
-    ({ name, amount, billingCycle } = plan);
-    planCode = selectedCode;
-    razorpayPlanId = plan.razorpayPlanId || null;
-  } else if (isContribution) {
-    if (
-      !Number.isSafeInteger(contributionAmount) ||
-      contributionAmount < CONTRIBUTION_MIN ||
-      contributionAmount > CONTRIBUTION_MAX
-    ) {
-      throw new Error("Contribution amount is outside allowed limits");
-    }
-
-    amount = contributionAmount;
-    name = "Support DevKit";
-  } else if (type === "source_code") {
-    const product = SOURCE_CODES[itemCode];
-
-    if (!product) {
-      throw new Error("Invalid source code product");
-    }
-
-    ({ name, amount } = product);
-  }
-
-  const payment = new Payment({
-    ...(normalizedUserId ? { user: normalizedUserId } : {}),
+  const definition = getPaymentDefinition({
     type,
-    purpose: {
-      name,
-      itemCode: itemCode || null,
-      resourceId,
-      metadata: {},
-    },
-    amount,
-    currency: "INR",
-    status: "created",
-    idempotencyKey,
-    subscription: {
-      planCode,
-      billingCycle,
-    },
-    statusHistory: [
-      {
-        status: "created",
-        source: "system",
-        reason: "Checkout initiated",
-        changedAt: new Date(),
-      },
-    ],
+    itemCode,
+    contributionAmount,
   });
 
-  await payment.save();
+  let existing = await findExistingPayment({
+    userId,
+    idempotencyKey,
+    type,
+  });
+
+  if (existing) {
+    if (existing.gateway?.cashfreePaymentSessionId) {
+      return serializePayment(existing);
+    }
+
+    if (
+      existing.status === "captured" ||
+      existing.status === "failed" ||
+      existing.status === "cancelled" ||
+      existing.status === "expired"
+    ) {
+      const error = new Error(
+        "This idempotency key has already been used. Generate a new key."
+      );
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
+  let user = null;
+
+  if (userId) {
+    user = await User.findById(userId);
+
+    if (!user) {
+      const error = new Error("User not found");
+      error.statusCode = 404;
+      throw error;
+    }
+  }
+
+  const now = new Date();
+
+  let payment = existing;
+
+  if (!payment) {
+    payment = new Payment({
+      ...(userId ? { user: userId } : {}),
+      type: definition.type,
+      purpose: {
+        name: definition.name,
+        itemCode: definition.itemCode,
+        metadata: {},
+      },
+      amount: definition.amount,
+      currency: "INR",
+      status: "created",
+      gateway: {
+        provider: "cashfree",
+      },
+      subscription: definition.plan
+        ? {
+            planCode: definition.plan.code,
+            billingCycle: definition.plan.billingCycle,
+            periodStart: null,
+            periodEnd: null,
+          }
+        : undefined,
+      idempotencyKey,
+      expiresAt: new Date(now.getTime() + 30 * 60 * 1000),
+      statusHistory: [
+        {
+          status: "created",
+          source: "system",
+          reason: "Payment initialized",
+          changedAt: now,
+        },
+      ],
+    });
+
+    await payment.save();
+  }
+
+  const orderId = `cf_${payment._id.toString()}`;
 
   try {
-    if (type === "subscription" && razorpayPlanId) {
-      try {
-        const subscription = await razorpay.subscriptions.create({
-          plan_id: razorpayPlanId,
-          total_count: billingCycle === "yearly" ? 10 : 120,
-          quantity: 1,
-          customer_notify: 1,
-          notes: {
-            paymentRecordId: payment._id.toString(),
-            userId: normalizedUserId.toString(),
-            itemCode: planCode,
-          },
-        });
+    const customerDetails = getCustomerDetails(userId, user, payment);
 
-        payment.gateway.razorpaySubscriptionId = subscription.id;
-        addHistory(payment, "pending", "system", "Razorpay subscription created");
-      } catch (subErr) {
-        console.warn("Razorpay subscription creation failed, falling back to Order:", subErr.message);
-        const order = await razorpay.orders.create({
-          amount,
-          currency: "INR",
-          receipt: payment._id.toString().slice(-40),
-          notes: {
-            paymentRecordId: payment._id.toString(),
-            userId: normalizedUserId ? normalizedUserId.toString() : "anonymous",
-            type,
-            itemCode: planCode || "",
-          },
-        });
+    const origin =
+      process.env.FRONTEND_URL ||
+      process.env.CLIENT_URL ||
+      process.env.WEBSITE_URL;
 
-        payment.gateway.razorpayOrderId = order.id;
-        addHistory(payment, "pending", "system", "Razorpay order created for subscription fallback");
-      }
-    } else {
-      const order = await razorpay.orders.create({
-        amount,
-        currency: "INR",
-        receipt: payment._id.toString().slice(-40),
-        notes: {
-          paymentRecordId: payment._id.toString(),
-          userId: normalizedUserId ? normalizedUserId.toString() : "anonymous",
-          type,
-          itemCode: itemCode || planCode || "",
-        },
-      });
+    const body = {
+      order_id: orderId,
+      order_amount: Number((definition.amount / 100).toFixed(2)),
+      order_currency: "INR",
+      customer_details: customerDetails,
+      order_note: definition.name.slice(0, 250),
+      order_meta: {
+        ...(origin
+          ? {
+              return_url: `${origin.replace(/\/$/, "")}/payment/return?order_id=${orderId}`,
+            }
+          : {}),
+      },
+    };
 
-      payment.gateway.razorpayOrderId = order.id;
-      addHistory(payment, "pending", "system", `Razorpay order created for ${type}`);
+    const order = await cashfreeRequest("/orders", {
+      method: "POST",
+      body,
+    });
+
+    if (!order.payment_session_id || !order.order_id) {
+      throw new Error("Cashfree did not return a valid payment session");
     }
+
+    payment.gateway.provider = "cashfree";
+    payment.gateway.cashfreeOrderId = order.order_id;
+    payment.gateway.cashfreePaymentSessionId = order.payment_session_id;
+
+    addHistory(
+      payment,
+      "pending",
+      "system",
+      "Cashfree order created"
+    );
 
     await payment.save();
 
     return serializePayment(payment);
   } catch (error) {
-    console.error("PAYMENT CREATION ERROR:", error);
-    if (
-      process.env.RAZORPAY_KEY_ID === "your_key_id" ||
-      (error.error && error.error.description?.includes("Unauthorized"))
-    ) {
-      throw new Error(
-        "Razorpay credentials not yet configured. Please add your RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in starterKit-backend/.env."
+    if (payment.status !== "captured") {
+      payment.failure = {
+        code: "CASHFREE_ORDER_CREATION_FAILED",
+        description: String(error.message || "Order creation failed").slice(
+          0,
+          500
+        ),
+        failedAt: new Date(),
+      };
+
+      addHistory(
+        payment,
+        "failed",
+        "system",
+        "Cashfree order creation failed"
       );
+
+      await payment.save().catch(() => {});
     }
-    throw new Error(error.message || "Unable to complete checkout creation");
+
+    throw error;
   }
 }
 
-async function verifyPayment({
-  userId,
-  razorpay_order_id,
-  razorpay_subscription_id,
-  razorpay_payment_id,
-  razorpay_signature,
-  allowAnonymous = false,
+async function verifyPayment({ userId, orderId }) {
+  assertConfig();
+
+  if (!orderId || typeof orderId !== "string") {
+    const error = new Error("Cashfree order ID is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const payment = await Payment.findOne({
+    "gateway.cashfreeOrderId": orderId,
+    ...(userId ? { user: userId } : {}),
+  });
+
+  if (!payment) {
+    const error = new Error("Payment record not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (payment.status === "captured") {
+    return {
+      ...serializePayment(payment),
+      verified: true,
+    };
+  }
+
+  const order = await cashfreeRequest(
+    `/orders/${encodeURIComponent(orderId)}`
+  );
+
+  if (order.order_id !== orderId) {
+    const error = new Error("Cashfree order ID mismatch");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const cashfreeAmount = Math.round(Number(order.order_amount) * 100);
+
+  if (
+    !Number.isSafeInteger(cashfreeAmount) ||
+    cashfreeAmount !== payment.amount ||
+    order.order_currency !== payment.currency
+  ) {
+    const error = new Error("Payment amount or currency mismatch");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (order.order_status !== "PAID") {
+    if (
+      order.order_status === "EXPIRED" ||
+      order.order_status === "TERMINATED"
+    ) {
+      addHistory(
+        payment,
+        "expired",
+        "reconciliation",
+        `Cashfree order status: ${order.order_status}`
+      );
+      await payment.save();
+    }
+
+    return {
+      ...serializePayment(payment),
+      verified: false,
+      gatewayStatus: order.order_status,
+    };
+  }
+
+  const payments = await cashfreeRequest(
+    `/orders/${encodeURIComponent(orderId)}/payments`
+  );
+
+  const successfulPayment = Array.isArray(payments)
+    ? payments.find(
+        (entry) =>
+          entry.payment_status === "SUCCESS" &&
+          entry.payment_currency === payment.currency &&
+          Math.round(Number(entry.payment_amount) * 100) === payment.amount
+      )
+    : null;
+
+  if (!successfulPayment) {
+    const error = new Error(
+      "Cashfree order is marked paid but no matching successful payment was found"
+    );
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    await session.withTransaction(async () => {
+      const freshPayment = await Payment.findById(payment._id).session(
+        session
+      );
+
+      if (!freshPayment) {
+        throw new Error("Payment record not found");
+      }
+
+      if (freshPayment.status === "captured") {
+        return;
+      }
+
+      if (
+        freshPayment.gateway?.cashfreeOrderId !== orderId ||
+        freshPayment.amount !== payment.amount
+      ) {
+        throw new Error("Payment record changed during verification");
+      }
+
+      freshPayment.gateway.cashfreePaymentId = String(
+        successfulPayment.cf_payment_id
+      );
+
+      addHistory(
+        freshPayment,
+        "captured",
+        "reconciliation",
+        "Cashfree payment verified successfully"
+      );
+
+      freshPayment.capturedAt = new Date();
+      freshPayment.failure = {
+        code: null,
+        description: null,
+        failedAt: null,
+      };
+
+      if (freshPayment.type === "subscription") {
+        const plan = PLANS[freshPayment.subscription?.planCode];
+
+        if (!plan) {
+          throw new Error("Subscription plan configuration not found");
+        }
+
+        const currentUser = await User.findById(freshPayment.user).session(
+          session
+        );
+
+        if (!currentUser) {
+          throw new Error("User not found while activating subscription");
+        }
+
+        const currentExpiry = currentUser.subscription?.expiresAt
+          ? new Date(currentUser.subscription.expiresAt)
+          : null;
+
+        const startDate =
+          currentExpiry && currentExpiry > new Date()
+            ? currentExpiry
+            : new Date();
+
+        const expiresAt = new Date(startDate);
+        expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
+
+        currentUser.subscription = {
+          ...(currentUser.subscription?.toObject?.() ||
+            currentUser.subscription ||
+            {}),
+          plan: "pro",
+          status: "active",
+          expiresAt,
+        };
+
+        currentUser.markModified("subscription");
+        await currentUser.save({ session });
+
+        freshPayment.subscription.periodStart = startDate;
+        freshPayment.subscription.periodEnd = expiresAt;
+      }
+
+      await freshPayment.save({ session });
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const updatedPayment = await Payment.findById(payment._id);
+
+  return {
+    ...serializePayment(updatedPayment),
+    verified: updatedPayment.status === "captured",
+  };
+}
+
+function verifyCashfreeWebhookSignature({
+  rawBody,
+  timestamp,
+  signature,
+}) {
+  if (!rawBody || !timestamp || !signature) {
+    return false;
+  }
+
+  const expected = crypto
+    .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
+    .update(String(timestamp) + rawBody)
+    .digest("base64");
+
+  const expectedBuffer = Buffer.from(expected);
+  const receivedBuffer = Buffer.from(String(signature));
+
+  return (
+    expectedBuffer.length === receivedBuffer.length &&
+    crypto.timingSafeEqual(expectedBuffer, receivedBuffer)
+  );
+}
+
+async function handleCashfreeWebhook({
+  rawBody,
+  timestamp,
+  signature,
+  event,
 }) {
   assertConfig();
 
   if (
-    typeof razorpay_payment_id !== "string" ||
-    typeof razorpay_signature !== "string"
+    !verifyCashfreeWebhookSignature({
+      rawBody,
+      timestamp,
+      signature,
+    })
   ) {
-    throw new Error("Missing payment verification details");
+    const error = new Error("Invalid Cashfree webhook signature");
+    error.statusCode = 401;
+    throw error;
   }
 
-  const isSubscription = Boolean(razorpay_subscription_id);
+  const payload = event || JSON.parse(rawBody);
+  const data = payload.data || {};
+  const orderData = data.order || {};
+  const paymentData = data.payment || {};
 
-  if (allowAnonymous && (isSubscription || userId)) {
-    throw new Error("Invalid anonymous payment verification request");
+  const orderId = orderData.order_id;
+
+  if (!orderId) {
+    return { received: true, ignored: true };
   }
 
-  if (!allowAnonymous && !userId) {
-    throw new Error("Login is required to verify this payment");
-  }
-
-  if (userId && !mongoose.Types.ObjectId.isValid(userId)) {
-    throw new Error("Invalid userId");
-  }
-
-  if (isSubscription && typeof razorpay_subscription_id !== "string") {
-    throw new Error("Invalid subscription reference");
-  }
-
-  if (!isSubscription && typeof razorpay_order_id !== "string") {
-    throw new Error("Invalid order reference");
-  }
-
-  const lookup = isSubscription
-    ? {
-        "gateway.razorpaySubscriptionId": razorpay_subscription_id,
-        type: "subscription",
-      }
-    : {
-        "gateway.razorpayOrderId": razorpay_order_id,
-      };
-
-  if (allowAnonymous) {
-    lookup.type = "contribution";
-    lookup.user = { $exists: false };
-  } else {
-    lookup.user = new mongoose.Types.ObjectId(userId);
-  }
-
-  const payment = await Payment.findOne(lookup);
+  const payment = await Payment.findOne({
+    "gateway.cashfreeOrderId": orderId,
+  });
 
   if (!payment) {
-    throw new Error("Payment record not found");
+    return { received: true, ignored: true };
   }
 
-  if (payment.type !== "contribution" && !payment.user) {
-    throw new Error("Authenticated payment record required");
+  const eventType = String(payload.type || "");
+  const eventTime = payload.event_time
+    ? new Date(payload.event_time)
+    : new Date();
+
+  if (
+    payment.gateway.lastWebhookAt &&
+    eventTime <= payment.gateway.lastWebhookAt
+  ) {
+    return { received: true, duplicate: true };
   }
 
-  if (allowAnonymous && payment.type !== "contribution") {
-    throw new Error("Anonymous verification is only allowed for contributions");
+  payment.gateway.lastWebhookEventId =
+    payload.id || payload.event_id || null;
+  payment.gateway.lastWebhookEventType = eventType;
+  payment.gateway.lastWebhookAt = eventTime;
+
+  if (
+    eventType.includes("PAYMENT_SUCCESS") &&
+    paymentData.payment_status === "SUCCESS"
+  ) {
+    const result = await verifyPayment({
+      userId: payment.user ? payment.user.toString() : undefined,
+      orderId,
+    });
+
+    return { received: true, verified: result.verified };
   }
 
-  const gatewayId = isSubscription
-    ? payment.gateway.razorpaySubscriptionId
-    : payment.gateway.razorpayOrderId;
-
-  if (!gatewayId) {
-    throw new Error("Payment reference not found");
-  }
-
-  const signatureMessage = isSubscription
-    ? `${razorpay_payment_id}|${gatewayId}`
-    : `${gatewayId}|${razorpay_payment_id}`;
-
-  if (!verifyHmac(signatureMessage, razorpay_signature)) {
-    throw new Error("Invalid payment signature");
-  }
-
-  if (payment.status === "captured") {
-    if (
-      payment.gateway.razorpayPaymentId === razorpay_payment_id &&
-      payment.gateway.razorpaySignatureVerified
-    ) {
-      return {
-        paymentId: payment._id,
-        status: payment.status,
-        type: payment.type,
-        alreadyVerified: true,
+  if (eventType.includes("PAYMENT_FAILED")) {
+    if (payment.status !== "captured") {
+      payment.failure = {
+        code: String(paymentData.payment_status || "PAYMENT_FAILED"),
+        description: String(
+          paymentData.payment_message || "Cashfree payment failed"
+        ).slice(0, 500),
+        failedAt: new Date(),
       };
+
+      addHistory(
+        payment,
+        "failed",
+        "webhook",
+        "Cashfree reported payment failure"
+      );
     }
-
-    throw new Error("Payment has already been verified");
   }
-
-  if (
-    [
-      "refunded",
-      "partially_refunded",
-      "cancelled",
-      "expired",
-      "failed",
-    ].includes(payment.status)
-  ) {
-    throw new Error("Payment is no longer eligible for verification");
-  }
-
-  const gatewayPayment = await razorpay.payments.fetch(razorpay_payment_id);
-
-  if (
-    gatewayPayment.status !== "captured" ||
-    gatewayPayment.amount !== payment.amount ||
-    gatewayPayment.currency !== payment.currency
-  ) {
-    throw new Error("Payment is not captured or details do not match");
-  }
-
-  if (isSubscription) {
-    if (
-      gatewayPayment.subscription_id &&
-      gatewayPayment.subscription_id !== gatewayId
-    ) {
-      throw new Error("Subscription reference mismatch");
-    }
-  } else if (gatewayPayment.order_id !== gatewayId) {
-    throw new Error("Order reference mismatch");
-  }
-
-  payment.gateway.razorpayPaymentId = razorpay_payment_id;
-  payment.gateway.razorpaySignatureVerified = true;
-  payment.capturedAt = new Date();
-
-  addHistory(
-    payment,
-    "captured",
-    "system",
-    "Checkout signature and captured payment verified",
-  );
 
   await payment.save();
 
-  let userSubscription = null;
-  if (payment.type === "subscription" && payment.user) {
-    const expiresAt = new Date();
-    if (payment.subscription?.billingCycle === "yearly") {
-      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
-    } else {
-      expiresAt.setMonth(expiresAt.getMonth() + 1);
-    }
+  return { received: true };
+}
 
-    const updatedUser = await User.findByIdAndUpdate(
-      payment.user,
-      {
-        "subscription.plan": "pro",
-        "subscription.status": "active",
-        "subscription.startedAt": new Date(),
-        "subscription.expiresAt": expiresAt,
-        "subscription.paymentId": razorpay_payment_id,
-      },
-      { new: true }
-    );
-
-    if (updatedUser) {
-      userSubscription = updatedUser.subscription;
-    }
-  }
-
-  return {
-    paymentId: payment._id,
-    status: payment.status,
-    type: payment.type,
-    subscription: userSubscription || (payment.type === "subscription" ? { plan: "pro", status: "active" } : null),
-  };
+async function verifyContribution({ orderId }) {
+  return verifyPayment({ orderId });
 }
 
 module.exports = {
   createPayment,
   verifyPayment,
+  verifyContribution,
+  handleCashfreeWebhook,
 };
