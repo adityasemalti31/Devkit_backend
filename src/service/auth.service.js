@@ -2,9 +2,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 
-const generateToken = (userId) => {
+const generateToken = (userId, role = "user") => {
   return jwt.sign(
-    { userId },
+    { userId, role },
     process.env.JWT_SECRET,
     {
       expiresIn: "7d",
@@ -12,7 +12,7 @@ const generateToken = (userId) => {
   );
 };
 
-const registerUser = async ({ name, email, password }) => {
+const registerUser = async ({ name, email, password, role = "user" }) => {
   const existingUser = await User.findOne({ email });
 
   if (existingUser) {
@@ -27,9 +27,10 @@ const registerUser = async ({ name, email, password }) => {
     name,
     email,
     password: hashedPassword,
+    role: role === "admin" ? "admin" : "user",
   });
 
-  const token = generateToken(user._id);
+  const token = generateToken(user._id, user.role);
 
   return {
     token,
@@ -37,6 +38,7 @@ const registerUser = async ({ name, email, password }) => {
       id: user._id,
       name: user.name,
       email: user.email,
+      role: user.role || "user",
       subscription: user.subscription,
     },
   };
@@ -62,7 +64,7 @@ const loginUser = async ({ email, password }) => {
     throw error;
   }
 
-  const token = generateToken(user._id);
+  const token = generateToken(user._id, user.role);
 
   return {
     token,
@@ -70,6 +72,7 @@ const loginUser = async ({ email, password }) => {
       id: user._id,
       name: user.name,
       email: user.email,
+      role: user.role || "user",
       subscription: user.subscription,
     },
   };
@@ -87,6 +90,7 @@ const getCurrentUser = async (userId) => {
     id: user._id,
     name: user.name,
     email: user.email,
+    role: user.role || "user",
     subscription: user.subscription,
   };
 };

@@ -9,7 +9,7 @@ const rateLimit = require("express-rate-limit");
 const app = express();
 
 // Security
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 
 // CORS
 app.use(cors());
@@ -18,8 +18,8 @@ app.use(cors());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
 // Body parser
-app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+app.use(express.json({ limit: "50kb" }));
+app.use(express.urlencoded({ extended: true, limit: "50kb" }));
 
 // Cookies
 app.use(cookieParser());
@@ -27,32 +27,46 @@ app.use(cookieParser());
 // Compression
 app.use(compression());
 
+// Static files for Admin Panel SPA
+const path = require("path");
+app.use(express.static(path.join(__dirname, "public")));
+
 // Rate limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 app.use("/api", apiLimiter);
 
-// Routes
+// Health check route
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
     message: "DevKit API is running 🚀",
+    endpoints: {
+      auth: "/api/auth",
+      components: "/api/component",
+      payments: "/api/payments",
+      admin: "/api/admin",
+      adminPanel: "/admin",
+    },
   });
 });
 
-// Future routes
-app.use("/api/auth", require('./src/routes/auth.routes'));
-app.use("/api/mern", require('./src/routes/mern.routes'));
-app.use("/api/payments", require('./src/routes/payment.routes'));
-app.use("/api/component", require('./src/routes/component.routes'));
-// app.use("/api/users", userRoutes);
-// app.use("/api/resources", resourceRoutes);
-// app.use("/api/projects", projectRoutes);
+// Admin Panel Web Dashboard route
+app.get("/admin", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "admin", "index.html"));
+});
+
+// API Routes
+app.use("/api/auth", require("./src/routes/auth.routes"));
+app.use("/api/mern", require("./src/routes/mern.routes"));
+app.use("/api/payments", require("./src/routes/payment.routes"));
+app.use("/api/component", require("./src/routes/component.routes"));
+app.use("/api/admin", require("./src/routes/admin.routes"));
 
 // 404
 app.use((req, res) => {

@@ -249,7 +249,7 @@ componentSchema.index(
   },
   {
     default_language: "english",
-    language_override: "searchLanguage",
+    language_override: "none",
   }
 );
 
