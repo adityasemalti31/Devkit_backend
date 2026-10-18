@@ -66,6 +66,7 @@ app.use("/api/auth", require("./src/routes/auth.routes"));
 app.use("/api/mern", require("./src/routes/mern.routes"));
 app.use("/api/payments", require("./src/routes/payment.routes"));
 app.use("/api/component", require("./src/routes/component.routes"));
+app.use("/api/feedback", require("./src/routes/feedback.routes"));
 app.use("/api/admin", require("./src/routes/admin.routes"));
 
 // 404
